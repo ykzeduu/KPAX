@@ -986,10 +986,18 @@ if __name__ == '__main__':
     if not os.path.exists("logo.jpg"):
         print("AVISO: Lembre-se de salvar sua logo como 'logo.jpg' na mesma pasta deste script para exibição no sistema!")
         
-    server = ThreadedHTTPServer(('', 5000), RequestHandler)
+    # Pega a porta que o Render fornecer. Se não achar (como no seu PC), usa a 5000 por padrão.
+    porta = int(os.environ.get("PORT", 5000))
+    
+    server = ThreadedHTTPServer(('', porta), RequestHandler)
+    print("========================================")
+    print(f"Controle do KPAX Iniciado na porta {porta}!")
     print("========================================")
     print("Controle do KPAX Iniciado com Sucesso!")
-    print("Acesse no navegador: http://127.0.0.1:5000")
+    print(f"Acesse no navegador: http://127.0.0.1:{porta}")
     print("========================================")
-    try: server.serve_forever()
-    except KeyboardInterrupt: pass
+    
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
