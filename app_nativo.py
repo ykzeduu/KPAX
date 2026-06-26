@@ -1,4 +1,5 @@
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import urllib.parse
 import uuid
 import os
@@ -10,24 +11,24 @@ from http.cookies import SimpleCookie
 # ======= CONFIGURAÇÕES E BANCO ============
 # ==========================================
 
-DB_NAME = "kpax_controle.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 def get_db_connection():
-    return sqlite3.connect(DB_NAME, timeout=30)
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 SESSIONS = {}
 
 def init_db():
     conn = get_db_connection()
-    c = conn.cursor()
+    c = conn.cursor(cursor_factory=RealDictCursor)
     
     # Tabela de solicitações
     c.execute('''
         CREATE TABLE IF NOT EXISTS solicitacao (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             cod_cliente TEXT NOT NULL,
             cliente_razao TEXT NOT NULL,
             equipamentos TEXT NOT NULL,
@@ -40,21 +41,10 @@ def init_db():
         )
     ''')
     
-    c.execute("PRAGMA table_info(solicitacao)")
-    columns = [info[1] for info in c.fetchall()]
-    if 'contato' not in columns:
-        c.execute("ALTER TABLE solicitacao ADD COLUMN contato TEXT")
-    if 'solicitante' not in columns:
-        c.execute("ALTER TABLE solicitacao ADD COLUMN solicitante TEXT")
-    if 'obs_improdutivo' not in columns:
-        c.execute("ALTER TABLE solicitacao ADD COLUMN obs_improdutivo TEXT")
-    if 'resolvido_por' not in columns:
-        c.execute("ALTER TABLE solicitacao ADD COLUMN resolvido_por TEXT")
-        
     # Tabela de Usuários
     c.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             senha TEXT NOT NULL,
             role TEXT NOT NULL
@@ -72,12 +62,17 @@ def init_db():
     ]
     
     for u, s, r in usuarios_padrao:
-        c.execute("INSERT OR IGNORE INTO usuarios (username, senha, role) VALUES (?, ?, ?)", (u, s, r))
+        c.execute("INSERT INTO usuarios (username, senha, role) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING", (u, s, r))
         
     conn.commit()
     conn.close()
 
-init_db()
+# Executa a inicialização do banco seguro na nuvem
+try:
+    if DATABASE_URL:
+        init_db()
+except Exception as e:
+    print(f"Aviso de banco inicial: {e}")
 
 # ==========================================
 # ============ TEMPLATES HTML ==============
@@ -113,7 +108,6 @@ def render_base(title, content, session_data=None, message="", msg_type="info"):
         </div>
         """
         
-        # Script de atualização automática (apenas quando logado e fora das telas de configuração)
         if title not in ["Alterar Senha", "Controle de Usuários"]:
             auto_refresh_script = """
             <script>
@@ -176,77 +170,40 @@ def render_base(title, content, session_data=None, message="", msg_type="info"):
         </script>
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-            
-            body {{ 
-                background-color: #f0f4f8; 
-                font-family: 'Inter', sans-serif; 
-                font-size: 0.9rem; 
-                padding-top: 85px; 
-                color: #2c3e50;
-                transition: background-color 0.3s, color 0.3s;
-            }}
-            .top-bar {{ 
-                background: linear-gradient(135deg, #102a43 0%, #243b55 100%); 
-                position: fixed; top: 0; left: 0; width: 100%; 
-                display: flex; justify-content: space-between; align-items: center; 
-                padding: 12px 30px; z-index: 1050; 
-                box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
-            }}
+            body {{ background-color: #f0f4f8; font-family: 'Inter', sans-serif; font-size: 0.9rem; padding-top: 85px; color: #2c3e50; transition: background-color 0.3s, color 0.3s; }}
+            .top-bar {{ background: linear-gradient(135deg, #102a43 0%, #243b55 100%); position: fixed; top: 0; left: 0; width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 12px 30px; z-index: 1050; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }}
             .top-bar h4 {{ color: white; margin: 0; font-size: 1.3rem; font-weight: 700; display: flex; align-items: center; letter-spacing: 0.5px; }}
             .top-bar h4 img {{ height: 35px; margin-right: 15px; border-radius: 4px; background: white; padding: 2px; }}
             .user-badge {{ background: rgba(255,255,255,0.1); padding: 5px 12px; border-radius: 20px; color: #e2e8f0; font-weight: 500; }}
-            
             .card {{ border: none; border-radius: 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.04); overflow: hidden; margin-bottom: 25px; transition: background-color 0.3s; }}
             .card-header {{ font-weight: 600; letter-spacing: 0.3px; border-bottom: none; padding: 15px 20px; }}
             .bg-kpax-primary {{ background: linear-gradient(135deg, #102a43 0%, #1a365d 100%); color: white; }}
-            
             .btn {{ border-radius: 8px; font-weight: 500; transition: all 0.2s; }}
             .btn:hover {{ transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }}
             .form-control, .form-select {{ border-radius: 8px; border: 1px solid #cbd5e1; padding: 0.5rem 0.75rem; }}
             .form-control:focus, .form-select:focus {{ border-color: #3b82f6; box-shadow: 0 0 0 0.25rem rgba(59, 130, 246, 0.25); }}
-            
             .kpi-card {{ border-radius: 16px; color: white; text-align: center; padding: 1.5rem 1rem; box-shadow: 0 8px 15px rgba(0,0,0,0.1); transition: transform 0.3s; border: none; }}
             .kpi-card:hover {{ transform: translateY(-5px); }}
             .kpi-card h2 {{ font-size: 2.5rem; font-weight: 700; margin-top: 10px; margin-bottom: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.2); }}
             .kpi-card span {{ font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; opacity: 0.9; }}
-            
             .kpi-restabelecer {{ background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }}
             .kpi-improdutivo {{ background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); }}
             .kpi-execucao {{ background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); }}
             .kpi-resolvido {{ background: linear-gradient(135deg, #10b981 0%, #047857 100%); }}
-            
             .table {{ margin-bottom: 0; }}
             .table thead th {{ background-color: #f8fafc; color: #475569; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; border-bottom: 2px solid #e2e8f0; padding: 12px 15px; }}
             .table tbody td {{ padding: 15px; vertical-align: middle; border-bottom: 1px solid #f1f5f9; color: #334155; }}
             .table tbody tr:hover {{ background-color: #f8fafc; }}
-            
             .badge-status {{ padding: 6px 12px; border-radius: 20px; font-weight: 600; font-size: 0.75rem; letter-spacing: 0.5px; }}
             .status-restabelecer {{ background-color: #fef3c7; color: #d97706; }}
             .status-improdutivo {{ background-color: #fee2e2; color: #b91c1c; }}
             .status-execucao {{ background-color: #dbeafe; color: #1d4ed8; }}
             .status-resolvido {{ background-color: #d1fae5; color: #047857; }}
-
-            .theme-toggle-btn {{
-                color: #475569;
-                border: 1px solid #cbd5e1;
-                background-color: #ffffff;
-            }}
-            .theme-toggle-btn:hover {{
-                background-color: #e2e8f0;
-                color: #1e293b;
-            }}
-            .top-bar .theme-toggle-btn {{
-                color: #e2e8f0;
-                border: 1px solid rgba(255,255,255,0.2);
-                background-color: transparent;
-            }}
-            .top-bar .theme-toggle-btn:hover {{
-                background-color: rgba(255,255,255,0.1);
-                color: #fff;
-            }}
-            
+            .theme-toggle-btn {{ color: #475569; border: 1px solid #cbd5e1; background-color: #ffffff; }}
+            .theme-toggle-btn:hover {{ background-color: #e2e8f0; color: #1e293b; }}
+            .top-bar .theme-toggle-btn {{ color: #e2e8f0; border: 1px solid rgba(255,255,255,0.2); background-color: transparent; }}
+            .top-bar .theme-toggle-btn:hover {{ background-color: rgba(255,255,255,0.1); color: #fff; }}
             .login-title {{ color: #102a43; }}
-
             [data-bs-theme="dark"] body {{ background-color: #121212; color: #e4e4e4; }}
             [data-bs-theme="dark"] .card {{ background-color: #1e1e1e; border: 1px solid #333; }}
             [data-bs-theme="dark"] .card-body.bg-white {{ background-color: #1e1e1e !important; }}
@@ -259,16 +216,8 @@ def render_base(title, content, session_data=None, message="", msg_type="info"):
             [data-bs-theme="dark"] .form-control, [data-bs-theme="dark"] .form-select {{ background-color: #2c2c2c; color: #fff; border-color: #444; }}
             [data-bs-theme="dark"] .form-control::placeholder {{ color: #888; }}
             [data-bs-theme="dark"] .input-group-text {{ background-color: #333 !important; border-color: #444 !important; color: #ccc !important; }}
-            
-            [data-bs-theme="dark"] .theme-toggle-btn {{
-                color: #f59e0b;
-                border-color: #f59e0b;
-                background-color: transparent;
-            }}
-            [data-bs-theme="dark"] .theme-toggle-btn:hover {{
-                background-color: rgba(245, 158, 11, 0.1);
-                color: #fbbf24;
-            }}
+            [data-bs-theme="dark"] .theme-toggle-btn {{ color: #f59e0b; border-color: #f59e0b; background-color: transparent; }}
+            [data-bs-theme="dark"] .theme-toggle-btn:hover {{ background-color: rgba(245, 158, 11, 0.1); color: #fbbf24; }}
         </style>
     </head>
     <body>
@@ -315,7 +264,6 @@ def render_login(message="", msg_type="danger"):
                 <div style="position: absolute; top: 20px; right: 20px; z-index: 10;">
                     <button id="btn-dark-mode" class="btn btn-sm theme-toggle-btn shadow-sm" onclick="toggleDarkMode()" title="Alternar Tema Escuro/Claro"></button>
                 </div>
-                
                 <div class="card-body p-5 text-center">
                     <img src="/logo.jpg" alt="KPAX Logo" style="height: 80px; margin-bottom: 25px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
                     <h4 class="mb-4 fw-bold login-title">Acesso ao Sistema</h4>
@@ -499,29 +447,27 @@ def render_usuarios(session_data, usuarios_lista, message="", msg_type="info"):
 
 def render_index(session_data, kpis, solicitacoes, message=""):
     linhas_tabela = ""
-    
     status_classes = {
         'Restabelecer': 'status-restabelecer',
         'Em Execução': 'status-execucao'
     }
-
+    
     for req in solicitacoes:
-        contato_val = req[6] if req[6] else "-"
-        solicitante_val = req[7] if req[7] else "Não atribuído"
-        status_atual = req[5]
+        contato_val = req['contato'] if req['contato'] else "-"
+        solicitante_val = req['solicitante'] if req['solicitante'] else "Não atribuído"
+        status_atual = req['status']
         badge_class = status_classes.get(status_atual, 'bg-secondary text-white')
         
         admin_actions = ""
         if session_data['role'] == 'admin':
             sel_r = "selected" if status_atual == "Restabelecer" else ""
             sel_e = "selected" if status_atual == "Em Execução" else ""
-            
             admin_actions = f"""
             <td>
                 <form action="/atualizar_status" method="POST" class="d-flex flex-column gap-1" onsubmit="return validarStatus(this)">
-                    <input type="hidden" name="id" value="{req[0]}">
-                    <div class="d-flex gap-1">
-                        <select name="status" class="form-select form-select-sm shadow-sm" style="width: 140px; border-radius: 6px;" onchange="toggleObsField(this, {req[0]})">
+                    <input type="hidden" name="id" value="{req['id']}">
+                    <div class="d-flex gap-1"> 
+                        <select name="status" class="form-select form-select-sm shadow-sm" style="width: 140px; border-radius: 6px;" onchange="toggleObsField(this, {req['id']})">
                             <option value="Restabelecer" {sel_r}>Restabelecer</option>
                             <option value="Em Execução" {sel_e}>Em Execução</option>
                             <option value="Improdutivo">Improdutivo</option>
@@ -529,27 +475,25 @@ def render_index(session_data, kpis, solicitacoes, message=""):
                         <button type="submit" class="btn btn-sm btn-primary shadow-sm" title="Atualizar Status"><i class="bi bi-arrow-repeat"></i></button>
                         <button type="submit" name="btn_resolver" value="Resolvido" class="btn btn-sm btn-success shadow-sm" title="Marcar como Resolvido" onclick="this.form.bypassValidation = true;"><i class="bi bi-check-lg"></i></button>
                     </div>
-                    <input type="text" name="obs_improdutivo" id="obs_{req[0]}" class="form-control form-control-sm mt-1" placeholder="Digite o motivo..." style="display: none; font-size:0.75rem;" autocomplete="off">
+                    <input type="text" name="obs_improdutivo" id="obs_{req['id']}" class="form-control form-control-sm mt-1" placeholder="Digite o motivo..." style="display: none; font-size:0.75rem;" autocomplete="off">
                 </form>
             </td>
             """
             
         linhas_tabela += f"""
         <tr>
-            <td><strong>{req[1]}</strong></td>
-            <td class="fw-medium">{req[2]}</td>
-            <td>{req[3]}</td>
+            <td><strong>{req['cod_cliente']}</strong></td>
+            <td class="fw-medium">{req['cliente_razao']}</td>
+            <td>{req['equipamentos']}</td>
             <td><i class="bi bi-telephone text-muted me-1"></i> {contato_val}</td>
             <td><i class="bi bi-person-badge text-primary me-1"></i> <strong>{solicitante_val}</strong></td>
-            <td><i class="bi bi-calendar3 text-muted me-1"></i> {req[4]}</td>
-            <td>
-                <span class="badge-status {badge_class}">{status_atual}</span>
-            </td>
+            <td><i class="bi bi-calendar3 text-muted me-1"></i> {req['data']}</td>
+            <td><span class="badge-status {badge_class}">{status_atual}</span></td>
             <td>
                 <div class="btn-group shadow-sm">
-                    <button class="btn btn-sm btn-light text-primary border" title="Editar" onclick="preencherEdicao({req[0]}, '{req[1]}', '{req[2]}', '{req[3]}', '{req[4]}', '{contato_val}')"><i class="bi bi-pencil-square"></i></button>
+                    <button class="btn btn-sm btn-light text-primary border" title="Editar" onclick="preencherEdicao({req['id']}, '{req['cod_cliente']}', '{req['cliente_razao']}', '{req['equipamentos']}', '{req['data']}', '{contato_val}')"><i class="bi bi-pencil-square"></i></button>
                     <form action="/deletar" method="POST" style="display:inline; margin:0;">
-                        <input type="hidden" name="id" value="{req[0]}">
+                        <input type="hidden" name="id" value="{req['id']}">
                         <button type="submit" class="btn btn-sm btn-light text-danger border" title="Excluir" onclick="return confirm('Tem certeza que deseja excluir esta solicitação?')"><i class="bi bi-trash3"></i></button>
                     </form>
                 </div>
@@ -561,7 +505,7 @@ def render_index(session_data, kpis, solicitacoes, message=""):
     if not solicitacoes:
         col_span = "9" if session_data['role'] == 'admin' else "8"
         linhas_tabela = f"<tr><td colspan='{col_span}' class='text-center py-5 text-muted'><i class='bi bi-inbox fs-2 d-block mb-2'></i>Nenhuma solicitação ativa no momento.</td></tr>"
-
+        
     admin_header = "<th>Gerenciar Status</th>" if session_data['role'] == 'admin' else ""
     
     content = f"""
@@ -591,7 +535,7 @@ def render_index(session_data, kpis, solicitacoes, message=""):
             </div>
         </div>
     </div>
-
+    
     <div class="card shadow-sm">
         <div class="card-header bg-kpax-primary d-flex justify-content-between align-items-center">
             <span id="titulo-form" class="fs-5"><i class="bi bi-plus-circle me-2"></i> Nova Solicitação</span>
@@ -628,7 +572,7 @@ def render_index(session_data, kpis, solicitacoes, message=""):
             </form>
         </div>
     </div>
-
+    
     <div class="card shadow-sm mt-4 mb-5">
         <div class="card-header bg-white border-bottom py-3">
             <h5 class="mb-0 text-dark fw-bold"><i class="bi bi-list-task text-primary me-2"></i> Solicitações em Andamento</h5>
@@ -639,344 +583,349 @@ def render_index(session_data, kpis, solicitacoes, message=""):
                     <tr>
                         <th>Cód. Cliente</th>
                         <th>Razão Social</th>
-                        <th>Equipamento</th>
+                        <th>Equipamentos</th>
                         <th>Contato</th>
-                        <th>Aberto Por</th>
-                        <th>Data</th>
+                        <th>Atendente</th>
+                        <th>Data Registro</th>
                         <th>Status</th>
                         <th>Ações</th>
                         {admin_header}
                     </tr>
                 </thead>
-                <tbody>{linhas_tabela}</tbody>
+                <tbody>
+                    {linhas_tabela}
+                </tbody>
             </table>
         </div>
     </div>
-
+    
     <script>
     function preencherEdicao(id, cod, razao, equip, data, contato) {{
-        window.isInteracting = true;
-        
         document.getElementById('id_editar').value = id;
         document.getElementById('cod_cliente').value = cod;
         document.getElementById('cliente_razao').value = razao;
         document.getElementById('equipamentos').value = equip;
-        document.getElementById('contato').value = contato === '-' ? '' : contato;
         document.getElementById('data').value = data;
+        document.getElementById('contato').value = contato === '-' ? '' : contato;
+        
+        document.getElementById('titulo-form').innerHTML = "<i class='bi bi-pencil-square me-2'></i> Editando Registro";
+        document.getElementById('btn-cancelar').style.display = 'block';
         
         const btn = document.getElementById('btn_submit_form');
-        btn.innerHTML = "<i class='bi bi-pencil-square me-2'></i> ATUALIZAR DADOS";
+        btn.innerHTML = "<i class='bi bi-check-circle me-2'></i> ATUALIZAR REGISTRO";
         btn.style.background = "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)";
-        
-        document.getElementById('titulo-form').innerHTML = "<i class='bi bi-pencil-square me-2'></i> Editando Solicitação #" + id;
-        document.getElementById('btn-cancelar').style.display = 'block';
         
         window.scrollTo({{ top: 0, behavior: 'smooth' }});
     }}
-    
-    function cancelarEdicao() {{ location.reload(); }}
-    
+    function cancelarEdicao() {{
+        location.reload();
+    }}
     function toggleObsField(selectElement, id) {{
-        window.isInteracting = true;
-        
-        const input = document.getElementById('obs_' + id);
-        if (selectElement.value === 'Improdutivo') {{
-            input.style.display = 'block';
-            setTimeout(() => input.focus(), 50);
+        const obsField = document.getElementById('obs_' + id);
+        if(selectElement.value === 'Improdutivo') {{
+            obsField.style.display = 'block';
+            obsField.required = true;
         }} else {{
-            input.style.display = 'none';
-            input.value = '';
+            obsField.style.display = 'none';
+            obsField.required = false;
         }}
     }}
-    
     function validarStatus(form) {{
-        if (form.bypassValidation) return true;
-        
-        const status = form.status.value;
-        const obs = form.obs_improdutivo;
-        
-        if (status === 'Improdutivo' && obs.value.trim() === '') {{
-            alert("⚠️ Por favor, digite o motivo de marcar como Improdutivo na caixinha de texto antes de atualizar.");
-            obs.style.display = 'block';
-            obs.focus();
+        if(form.bypassValidation) return true;
+        const select = form.querySelector('select[name="status"]');
+        const obs = form.querySelector('input[name="obs_improdutivo"]');
+        if(select.value === 'Improdutivo' && !obs.value.trim()) {{
+            alert('Por favor, informe o motivo do status Improdutivo!');
             return false;
         }}
         return true;
     }}
     </script>
     """
-    return render_base("Painel", content, session_data, message)
+    return render_base("Painel de Controle", content, session_data, message)
 
-def render_resolvidos(session_data, solicitacoes):
+def render_resolvidos(session_data, solicitacoes, message=""):
     linhas_tabela = ""
-    is_admin = session_data['role'] == 'admin'
-
     for req in solicitacoes:
-        status_atual = req[5]
-        obs = req[8]
-        resolvido_por = req[9] if len(req) > 9 and req[9] else "Não informado"
+        obs_val = f"<br><small class='text-danger fw-semibold'>Motivo: {req['obs_improdutivo']}</small>" if req['obs_improdutivo'] else ""
+        atendente = req['resolvido_por'] if req['resolvido_por'] else "Sistema"
         
-        obs_html = f'<div class="text-danger small mt-1"><b>Motivo:</b> {obs}</div>' if obs else ""
-        
-        if status_atual == 'Resolvido':
-            badge_html = '<span class="badge-status status-resolvido"><i class="bi bi-check-circle me-1"></i> Resolvido</span>'
+        badge_status = ""
+        if req['status'] == 'Resolvido':
+            badge_status = '<span class="badge-status status-resolvido">Resolvido</span>'
         else:
-            badge_html = '<span class="badge-status status-improdutivo"><i class="bi bi-exclamation-triangle-fill me-1"></i> Improdutivo</span>'
-        
-        encerrado_html = f'<div class="text-muted small mt-1"><i class="bi bi-person-check-fill me-1"></i> <b>Encerrado por:</b> {resolvido_por.lower()}</div>'
-        
-        action_td = ""
-        if is_admin:
-            action_td = f"""
-            <td>
-                <form action="/retroceder" method="POST" style="margin:0;">
-                    <input type="hidden" name="id" value="{req[0]}">
-                    <button type="submit" class="btn btn-sm btn-outline-warning shadow-sm" title="Voltar para Restabelecer">
-                        <i class="bi bi-archive text-warning"></i> Retroceder
-                    </button>
-                </form>
-            </td>"""
+            badge_status = '<span class="badge-status status-improdutivo">Improdutivo</span>'
+
+        btn_retroceder = ""
+        if session_data['role'] == 'admin':
+            btn_retroceder = f"""
+            <form action="/retroceder" method="POST" style="display:inline; margin:0;">
+                <input type="hidden" name="id" value="{req['id']}">
+                <button type="submit" class="btn btn-sm btn-light text-warning border" title="Mover de volta para Andamento" onclick="return confirm('Deseja retornar esta solicitação ao painel ativo?')">
+                    <i class="bi bi-arrow-left-right"></i> Reativar
+                </button>
+            </form>
+            """
 
         linhas_tabela += f"""
         <tr>
-            <td><strong>{req[1]}</strong></td>
-            <td class="fw-medium">{req[2]}</td>
-            <td>{req[3]}</td>
-            <td><i class="bi bi-telephone text-muted me-1"></i> {req[6] if req[6] else '-'}</td>
-            <td><i class="bi bi-person-fill text-primary me-1"></i> {req[7] if req[7] else '-'}</td>
-            <td><i class="bi bi-calendar3 text-muted me-1"></i> {req[4]}</td>
+            <td><strong>{req['cod_cliente']}</strong></td>
+            <td class="fw-medium">{req['cliente_razao']}</td>
+            <td>{req['equipamentos']}</td>
+            <td><i class="bi bi-calendar3 text-muted me-1"></i> {req['data']}</td>
+            <td>{badge_status}{obs_val}</td>
+            <td><span class="user-badge bg-secondary text-light" style="font-size:0.8rem;"><i class="bi bi-person-check me-1"></i>{atendente.lower()}</span></td>
             <td>
-                {badge_html}
-                {obs_html}
-                {encerrado_html}
+                {btn_retroceder}
             </td>
-            {action_td}
-        </tr>"""
-        
-    col_span = "8" if is_admin else "7"
-    if not solicitacoes:
-        linhas_tabela = f"<tr><td colspan='{col_span}' class='text-center py-5 text-muted'><i class='bi bi-inbox fs-2 d-block mb-2'></i>Nenhum histórico encontrado.</td></tr>"
+        </tr>
+        """
 
-    header_action = "<th>Ações</th>" if is_admin else ""
+    if not solicitacoes:
+        linhas_tabela = "<tr><td colspan='7' class='text-center py-5 text-muted'><i class='bi bi-folder-x fs-2 d-block mb-2'></i>Nenhum registro finalizado no histórico.</td></tr>"
 
     content = f"""
-    <div class="card shadow-sm mt-3 mb-5">
-        <div class="card-header" style="background: linear-gradient(135deg, #047857 0%, #10b981 100%); color: white; padding: 15px 20px;">
-            <h5 class="mb-0 fw-bold"><i class="bi bi-archive-fill me-2"></i> Histórico</h5>
+    <div class="card shadow-sm mt-2 mb-5">
+        <div class="card-header bg-success text-white py-3">
+            <h5 class="mb-0 fw-bold"><i class="bi bi-check-all me-2"></i> Histórico de Solicitações Finalizadas (Resolvidos / Improdutivos)</h5>
         </div>
         <div class="table-responsive">
-            <table class="table table-hover">
+            <table class="table table-hover align-middle">
                 <thead>
                     <tr>
                         <th>Cód. Cliente</th>
                         <th>Razão Social</th>
-                        <th>Equipamento</th>
-                        <th>Contato</th>
-                        <th>Aberto Por</th>
-                        <th>Data</th>
-                        <th>Status Final / Notas</th>
-                        {header_action}
+                        <th>Equipamentos</th>
+                        <th>Data Registro</th>
+                        <th>Resultado</th>
+                        <th>Finalizado Por</th>
+                        <th>Ações</th>
                     </tr>
                 </thead>
-                <tbody>{linhas_tabela}</tbody>
+                <tbody>
+                    {linhas_tabela}
+                </tbody>
             </table>
         </div>
     </div>
     """
-    return render_base("Histórico", content, session_data)
+    return render_base("Solicitações Resolvidas", content, session_data, message)
 
 # ==========================================
-# ============ REQUEST HANDLER =============
+# ========== PROCESSAMENTO DE ROTAS ========
 # ==========================================
 
 class RequestHandler(BaseHTTPRequestHandler):
-    def get_session(self):
-        cookie = SimpleCookie(self.headers.get('Cookie'))
-        if 'session_id' in cookie: return SESSIONS.get(cookie['session_id'].value), cookie['session_id'].value
-        return None, None
-
-    def send_html(self, html, cookies=None):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html; charset=utf-8')
-        if cookies:
-            for c in cookies: self.send_header('Set-Cookie', c.OutputString())
-        self.end_headers()
-        try: self.wfile.write(html.encode('utf-8'))
-        except (ConnectionAbortedError, BrokenPipeError): pass
-
-    def redirect(self, location, cookies=None):
+    def redirect(self, location, cookie_header=None):
         self.send_response(303)
         self.send_header('Location', location)
-        if cookies:
-            for c in cookies: self.send_header('Set-Cookie', c.OutputString())
+        if cookie_header:
+            self.send_header('Set-Cookie', cookie_header)
         self.end_headers()
+
+    def get_session(self):
+        cookie = SimpleCookie(self.headers.get('Cookie'))
+        if 'session_id' in cookie:
+            sid = cookie['session_id'].value
+            return SESSIONS.get(sid)
+        return None
+
+    def parse_post_data(self):
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length).decode('utf-8')
+        return urllib.parse.parse_qs(post_data)
 
     def do_GET(self):
-        if self.path == '/logo.jpg':
-            try:
-                with open('logo.jpg', 'rb') as f:
-                    self.send_response(200)
-                    self.send_header('Content-type', 'image/jpeg')
-                    self.end_headers()
-                    self.wfile.write(f.read())
-                return
-            except FileNotFoundError:
-                self.send_response(404)
-                self.end_headers()
-                return
+        session_data = self.get_session()
 
-        session_data, session_id = self.get_session()
-        
-        if self.path == '/login': return self.send_html(render_login())
-        
-        if self.path == '/logout':
-            if session_id in SESSIONS: del SESSIONS[session_id]
+        if not session_data and self.path != '/login':
             return self.redirect('/login')
-            
-        if not session_data: return self.redirect('/login')
-
-        if self.path == '/':
-            conn = get_db_connection()
-            c = conn.cursor()
-            kpis = {'Restabelecer': 0, 'Improdutivo': 0, 'Em Execução': 0, 'Resolvido': 0}
-            c.execute("SELECT status, COUNT(*) FROM solicitacao GROUP BY status")
-            for row in c.fetchall(): kpis[row[0]] = row[1]
-            
-            c.execute("SELECT * FROM solicitacao WHERE status NOT IN ('Resolvido', 'Improdutivo') ORDER BY id DESC")
-            solicitacoes = c.fetchall()
-            conn.close()
-            return self.send_html(render_index(session_data, kpis, solicitacoes))
-
-        if self.path == '/resolvidos':
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT * FROM solicitacao WHERE status IN ('Resolvido', 'Improdutivo') ORDER BY id DESC")
-            solicitacoes = c.fetchall()
-            conn.close()
-            return self.send_html(render_resolvidos(session_data, solicitacoes))
-
-        if self.path == '/alterar_senha':
-            return self.send_html(render_alterar_senha(session_data))
-
-        if self.path == '/usuarios':
-            if session_data['role'] != 'admin': return self.redirect('/')
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT id, username, senha, role FROM usuarios ORDER BY id ASC")
-            usuarios_lista = c.fetchall()
-            conn.close()
-            return self.send_html(render_usuarios(session_data, usuarios_lista))
-            
-        self.send_response(404)
-        self.end_headers()
-
-    def do_POST(self):
-        length = int(self.headers.get('Content-Length', 0))
-        form = urllib.parse.parse_qs(self.rfile.read(length).decode('utf-8'))
-        data = {k: v[0] for k, v in form.items()}
-        session_data, _ = self.get_session()
 
         if self.path == '/login':
-            user, pwd = data.get('usuario'), data.get('senha')
-            
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT senha, role FROM usuarios WHERE username = ?", (user,))
-            row = c.fetchone()
-            conn.close()
-            
-            if row and row[0] == pwd:
-                sid = str(uuid.uuid4())
-                SESSIONS[sid] = {"usuario": user, "role": row[1]}
-                c_cookie = SimpleCookie(); c_cookie['session_id'] = sid; c_cookie['session_id']['path'] = '/'
-                return self.redirect('/', cookies=[c_cookie['session_id']])
-            return self.send_html(render_login("Usuário ou senha incorretos. Tente novamente.", "danger"))
+            if session_data:
+                return self.redirect('/')
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(render_login().encode('utf-8'))
+            return
 
-        if not session_data: return self.redirect('/login')
+        if self.path == '/logout':
+            cookie = SimpleCookie(self.headers.get('Cookie'))
+            if 'session_id' in cookie:
+                SESSIONS.pop(cookie['session_id'].value, None)
+            return self.redirect('/login', "session_id=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/")
+
         conn = get_db_connection()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=RealDictCursor)
 
         if self.path == '/':
-            if data.get('id_editar'):
-                c.execute("UPDATE solicitacao SET cod_cliente=?, cliente_razao=?, equipamentos=?, data=?, contato=? WHERE id=?",
-                          (data['cod_cliente'], data['cliente_razao'], data['equipamentos'], data['data'], data.get('contato'), data['id_editar']))
-            else:
-                c.execute("INSERT INTO solicitacao (cod_cliente, cliente_razao, equipamentos, data, contato, solicitante) VALUES (?,?,?,?,?,?)",
-                          (data['cod_cliente'], data['cliente_razao'], data['equipamentos'], data['data'], data.get('contato'), session_data['usuario']))
-            conn.commit()
-            conn.close()
-            return self.redirect('/')
-        
+            c.execute("SELECT * FROM solicitacao WHERE status NOT IN ('Resolvido', 'Improdutivo') ORDER BY id DESC")
+            solicitacoes = c.fetchall()
+            
+            c.execute("SELECT status, COUNT(*) as qtd FROM solicitacao GROUP BY status")
+            res_kpis = c.fetchall()
+            kpis = {r['status']: r['qtd'] for r in res_kpis}
+            
+            # Adiciona contagem forçada de resolvidos no totalizador do painel
+            c.execute("SELECT COUNT(*) as qtd FROM solicitacao WHERE status IN ('Resolvido', 'Improdutivo')")
+            total_concluidos = c.fetchone()
+            kpis['Resolvido'] = total_concluidos['qtd'] if total_concluidos else 0
+
+            html = render_index(session_data, kpis, solicitacoes)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html.encode('utf-8'))
+
+        elif self.path == '/resolvidos':
+            c.execute("SELECT * FROM solicitacao WHERE status IN ('Resolvido', 'Improdutivo') ORDER BY id DESC")
+            solicitacoes = c.fetchall()
+            html = render_resolvidos(session_data, solicitacoes)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html.encode('utf-8'))
+
         elif self.path == '/alterar_senha':
-            senha_atual = data.get('senha_atual')
-            nova_senha = data.get('nova_senha')
-            confirmar_senha = data.get('confirmar_senha')
+            html = render_alterar_senha(session_data)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html.encode('utf-8'))
+
+        elif self.path == '/usuarios' and session_data['role'] == 'admin':
+            c.execute("SELECT id, username, senha, role FROM usuarios ORDER BY id ASC")
+            users = c.fetchall()
+            # Converte dicionários de volta para tuplas estruturadas apenas para o render_usuarios antigo ler sem quebras
+            users_tuples = [(u['id'], u['username'], u['senha'], u['role']) for u in users]
+            html = render_usuarios(session_data, users_tuples)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html.encode('utf-8'))
+
+        elif self.path == '/logo.jpg':
+            if os.path.exists("logo.jpg"):
+                self.send_response(200)
+                self.send_header('Content-type', 'image/jpeg')
+                self.end_headers()
+                with open("logo.jpg", "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404)
+
+        else:
+            self.send_error(404)
+
+        conn.close()
+
+    def do_POST(self):
+        session_data = self.get_session()
+        parsed_data = self.parse_post_data()
+        
+        # Converte dicionário do parse para formato limpo de strings
+        data = {k: v[0] for k, v in parsed_data.items()}
+
+        if self.path == '/login':
+            username_input = data.get('usuario', '').strip()
+            senha_input = data.get('senha', '')
             
-            if nova_senha != confirmar_senha:
-                conn.close()
-                return self.send_html(render_alterar_senha(session_data, "A confirmação de senha não confere!", "danger"))
-            
-            c.execute("SELECT senha FROM usuarios WHERE username = ?", (session_data['usuario'],))
-            row = c.fetchone()
-            if not row or row[0] != senha_atual:
-                conn.close()
-                return self.send_html(render_alterar_senha(session_data, "Sua senha atual está incorreta!", "danger"))
-                
-            c.execute("UPDATE usuarios SET senha = ? WHERE username = ?", (nova_senha, session_data['usuario']))
-            conn.commit()
+            conn = get_db_connection()
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute("SELECT username, senha, role FROM usuarios WHERE username=%s", (username_input,))
+            user = c.fetchone()
             conn.close()
-            return self.send_html(render_alterar_senha(session_data, "Senha alterada com sucesso!", "success"))
+
+            if user and user['senha'] == senha_input:
+                sid = str(uuid.uuid4())
+                SESSIONS[sid] = {'usuario': user['username'], 'role': user['role']}
+                return self.redirect('/', f"session_id={sid}; Path=/; HttpOnly")
+            else:
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(render_login(message="Usuário ou senha inválidos!").encode('utf-8'))
+                return
+
+        if not session_data:
+            return self.redirect('/login')
+
+        conn = get_db_connection()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+
+        if self.path == '/':
+            id_editar = data.get('id_editar', '')
+            if id_editar:
+                c.execute("""UPDATE solicitacao 
+                             SET cod_cliente=%s, cliente_razao=%s, equipamentos=%s, data=%s, contato=%s 
+                             WHERE id=%s""",
+                          (data['cod_cliente'], data['cliente_razao'], data['equipamentos'], data['data'], data['contato'], int(id_editar)))
+            else:
+                c.execute("""INSERT INTO solicitacao (cod_cliente, cliente_razao, equipamentos, data, contato, status, solicitante) 
+                             VALUES (%s, %s, %s, %s, %s, 'Restabelecer', %s)""",
+                          (data['cod_cliente'], data['cliente_razao'], data['equipamentos'], data['data'], data['contato'], session_data['usuario']))
+            conn.commit()
+
+        elif self.path == '/alterar_senha':
+            c.execute("SELECT senha FROM usuarios WHERE username=%s", (session_data['usuario'],))
+            user_pwd = c.fetchone()
+            
+            if not user_pwd or user_pwd['senha'] != data['senha_atual']:
+                html = render_alterar_senha(session_data, message="Senha atual incorreta!", msg_type="danger")
+            elif data['nova_senha'] != data['confirmar_senha']:
+                html = render_alterar_senha(session_data, message="A nova senha e a confirmação não conferem!", msg_type="danger")
+            else:
+                c.execute("UPDATE usuarios SET senha=%s WHERE username=%s", (data['nova_senha'], session_data['usuario']))
+                conn.commit()
+                html = render_alterar_senha(session_data, message="Senha atualizada com sucesso!", msg_type="success")
+                
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html.encode('utf-8'))
+            conn.close()
+            return
 
         elif self.path == '/usuarios/salvar' and session_data['role'] == 'admin':
-            id_usuario = data.get('id_usuario')
-            username = data.get('username').strip()
-            senha = data.get('senha').strip()
-            role = data.get('role')
-            
-            if id_usuario:
-                c.execute("UPDATE usuarios SET username=?, senha=?, role=? WHERE id=?", (username, senha, role, id_usuario))
-                conn.commit()
+            id_user = data.get('id_usuario', '')
+            if id_user:
+                c.execute("UPDATE usuarios SET username=%s, senha=%s, role=%s WHERE id=%s",
+                          (data['username'].strip(), data['senha'], data['role'], int(id_user)))
             else:
-                try:
-                    c.execute("INSERT INTO usuarios (username, senha, role) VALUES (?, ?, ?)", (username, senha, role))
-                    conn.commit()
-                except sqlite3.IntegrityError:
-                    c.execute("SELECT id, username, senha, role FROM usuarios ORDER BY id ASC")
-                    lista = c.fetchall()
-                    conn.close()
-                    return self.send_html(render_usuarios(session_data, lista, f"O nome de usuário '{username}' já está em uso!", "danger"))
-            
+                c.execute("INSERT INTO usuarios (username, senha, role) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING",
+                          (data['username'].strip(), data['senha'], data['role']))
+            conn.commit()
             conn.close()
             return self.redirect('/usuarios')
 
         elif self.path == '/usuarios/deletar' and session_data['role'] == 'admin':
-            id_del = data.get('id')
-            c.execute("SELECT username FROM usuarios WHERE id=?", (id_del,))
-            row = c.fetchone()
-            if row and row[0] != session_data['usuario']:
-                c.execute("DELETE FROM usuarios WHERE id=?", (id_del,))
-                conn.commit()
+            c.execute("DELETE FROM usuarios WHERE id=%s", (int(data['id']),))
+            conn.commit()
             conn.close()
             return self.redirect('/usuarios')
 
         elif self.path == '/atualizar_status' and session_data['role'] == 'admin':
-            status = 'Resolvido' if data.get('btn_resolver') else data.get('status')
+            status = data.get('status', 'Restabelecer')
+            if data.get('btn_resolver') == 'Resolvido':
+                status = 'Resolvido'
+                
             obs = data.get('obs_improdutivo', '') if status == 'Improdutivo' else ''
             
             if status in ['Resolvido', 'Improdutivo']:
-                c.execute("UPDATE solicitacao SET status=?, obs_improdutivo=?, resolvido_por=? WHERE id=?", 
-                          (status, obs, session_data['usuario'], data['id']))
+                c.execute("UPDATE solicitacao SET status=%s, obs_improdutivo=%s, resolvido_por=%s WHERE id=%s", 
+                          (status, obs, session_data['usuario'], int(data['id'])))
             else:
-                c.execute("UPDATE solicitacao SET status=?, obs_improdutivo=?, resolvido_por=NULL WHERE id=?", 
-                          (status, obs, data['id']))
+                c.execute("UPDATE solicitacao SET status=%s, obs_improdutivo=%s, resolvido_por=NULL WHERE id=%s", 
+                          (status, obs, int(data['id'])))
             conn.commit()
 
         elif self.path == '/retroceder' and session_data['role'] == 'admin':
-            c.execute("UPDATE solicitacao SET status='Restabelecer', resolvido_por=NULL WHERE id=?", (data['id'],))
+            c.execute("UPDATE solicitacao SET status='Restabelecer', resolvido_por=NULL WHERE id=%s", (int(data['id']),))
             conn.commit()
 
         elif self.path == '/deletar':
-            c.execute("DELETE FROM solicitacao WHERE id=?", (data['id'],))
+            c.execute("DELETE FROM solicitacao WHERE id=%s", (int(data['id']),))
             conn.commit()
 
         conn.close()
@@ -986,7 +935,6 @@ if __name__ == '__main__':
     if not os.path.exists("logo.jpg"):
         print("AVISO: Lembre-se de salvar sua logo como 'logo.jpg' na mesma pasta deste script para exibição no sistema!")
         
-    # Pega a porta que o Render fornecer. Se não achar (como no seu PC), usa a 5000 por padrão.
     porta = int(os.environ.get("PORT", 5000))
     
     server = ThreadedHTTPServer(('', porta), RequestHandler)
@@ -994,10 +942,8 @@ if __name__ == '__main__':
     print(f"Controle do KPAX Iniciado na porta {porta}!")
     print("========================================")
     print("Controle do KPAX Iniciado com Sucesso!")
-    print(f"Acesse no navegador: http://127.0.0.1:{porta}")
-    print("========================================")
     
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
+        print("\nServidor encerrado.")
