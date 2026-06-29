@@ -1,4 +1,4 @@
-import sqlite3
+import psycopg2
 import urllib.parse
 import uuid
 import os
@@ -10,13 +10,16 @@ from http.cookies import SimpleCookie
 # ======= CONFIGURAÇÕES E BANCO ============
 # ==========================================
 
-DB_NAME = "solicitação"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL não encontrada!")
+
 def get_db_connection():
-    return sqlite3.connect(DB_NAME, timeout=30)
+    return psycopg2.connect(DATABASE_URL)
 
 SESSIONS = {}
 
@@ -27,7 +30,7 @@ def init_db():
     # Tabela de solicitações
     c.execute('''
         CREATE TABLE IF NOT EXISTS solicitacao (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             cod_cliente TEXT NOT NULL,
             cliente_razao TEXT NOT NULL,
             equipamentos TEXT NOT NULL,
@@ -40,21 +43,10 @@ def init_db():
         )
     ''')
     
-    c.execute("PRAGMA table_info(solicitacao)")
-    columns = [info[1] for info in c.fetchall()]
-    if 'contato' not in columns:
-        c.execute("ALTER TABLE solicitacao ADD COLUMN contato TEXT")
-    if 'solicitante' not in columns:
-        c.execute("ALTER TABLE solicitacao ADD COLUMN solicitante TEXT")
-    if 'obs_improdutivo' not in columns:
-        c.execute("ALTER TABLE solicitacao ADD COLUMN obs_improdutivo TEXT")
-    if 'resolvido_por' not in columns:
-        c.execute("ALTER TABLE solicitacao ADD COLUMN resolvido_por TEXT")
-        
     # Tabela de Usuários
     c.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             senha TEXT NOT NULL,
             role TEXT NOT NULL
@@ -72,7 +64,7 @@ def init_db():
     ]
     
     for u, s, r in usuarios_padrao:
-        c.execute("INSERT OR IGNORE INTO usuarios (username, senha, role) VALUES (?, ?, ?)", (u, s, r))
+        c.execute("INSERT INTO usuarios(username, senha, role) VALUES (%s,%s,%s) ON CONFLICT(username) DO NOTHING;", (u, s, r))
         
     conn.commit()
     conn.close()
@@ -175,7 +167,7 @@ def render_base(title, content, session_data=None, message="", msg_type="info"):
             document.documentElement.setAttribute('data-bs-theme', savedTheme);
         </script>
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+            @import url('https://fonts.googleapis.com/css2%sfamily=Inter:wght@400;500;600;700&display=swap');
             
             body {{ 
                 background-color: #f0f4f8; 
@@ -881,7 +873,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT senha, role FROM usuarios WHERE username = ?", (user,))
+            c.execute("SELECT senha, role FROM usuarios WHERE username = %s", (user,))
             row = c.fetchone()
             conn.close()
             
@@ -898,10 +890,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if self.path == '/':
             if data.get('id_editar'):
-                c.execute("UPDATE solicitacao SET cod_cliente=?, cliente_razao=?, equipamentos=?, data=?, contato=? WHERE id=?",
+                c.execute("UPDATE solicitacao SET cod_cliente=%s, cliente_razao=%s, equipamentos=%s, data=%s, contato=%s WHERE id=%s",
                           (data['cod_cliente'], data['cliente_razao'], data['equipamentos'], data['data'], data.get('contato'), data['id_editar']))
             else:
-                c.execute("INSERT INTO solicitacao (cod_cliente, cliente_razao, equipamentos, data, contato, solicitante) VALUES (?,?,?,?,?,?)",
+                c.execute("INSERT INTO solicitacao (cod_cliente, cliente_razao, equipamentos, data, contato, solicitante) VALUES (%s,%s,%s,%s,%s,%s)",
                           (data['cod_cliente'], data['cliente_razao'], data['equipamentos'], data['data'], data.get('contato'), session_data['usuario']))
             conn.commit()
             conn.close()
@@ -916,13 +908,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 conn.close()
                 return self.send_html(render_alterar_senha(session_data, "A confirmação de senha não confere!", "danger"))
             
-            c.execute("SELECT senha FROM usuarios WHERE username = ?", (session_data['usuario'],))
+            c.execute("SELECT senha FROM usuarios WHERE username = %s", (session_data['usuario'],))
             row = c.fetchone()
             if not row or row[0] != senha_atual:
                 conn.close()
                 return self.send_html(render_alterar_senha(session_data, "Sua senha atual está incorreta!", "danger"))
                 
-            c.execute("UPDATE usuarios SET senha = ? WHERE username = ?", (nova_senha, session_data['usuario']))
+            c.execute("UPDATE usuarios SET senha = %s WHERE username = %s", (nova_senha, session_data['usuario']))
             conn.commit()
             conn.close()
             return self.send_html(render_alterar_senha(session_data, "Senha alterada com sucesso!", "success"))
@@ -934,13 +926,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             role = data.get('role')
             
             if id_usuario:
-                c.execute("UPDATE usuarios SET username=?, senha=?, role=? WHERE id=?", (username, senha, role, id_usuario))
+                c.execute("UPDATE usuarios SET username=%s, senha=%s, role=%s WHERE id=%s", (username, senha, role, id_usuario))
                 conn.commit()
             else:
                 try:
-                    c.execute("INSERT INTO usuarios (username, senha, role) VALUES (?, ?, ?)", (username, senha, role))
+                    c.execute("INSERT INTO usuarios (username, senha, role) VALUES (%s, %s, %s)", (username, senha, role))
                     conn.commit()
-                except sqlite3.IntegrityError:
+                except psycopg2.errors.UniqueViolation:
                     c.execute("SELECT id, username, senha, role FROM usuarios ORDER BY id ASC")
                     lista = c.fetchall()
                     conn.close()
@@ -951,10 +943,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         elif self.path == '/usuarios/deletar' and session_data['role'] == 'admin':
             id_del = data.get('id')
-            c.execute("SELECT username FROM usuarios WHERE id=?", (id_del,))
+            c.execute("SELECT username FROM usuarios WHERE id=%s", (id_del,))
             row = c.fetchone()
             if row and row[0] != session_data['usuario']:
-                c.execute("DELETE FROM usuarios WHERE id=?", (id_del,))
+                c.execute("DELETE FROM usuarios WHERE id=%s", (id_del,))
                 conn.commit()
             conn.close()
             return self.redirect('/usuarios')
@@ -964,19 +956,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             obs = data.get('obs_improdutivo', '') if status == 'Improdutivo' else ''
             
             if status in ['Resolvido', 'Improdutivo']:
-                c.execute("UPDATE solicitacao SET status=?, obs_improdutivo=?, resolvido_por=? WHERE id=?", 
+                c.execute("UPDATE solicitacao SET status=%s, obs_improdutivo=%s, resolvido_por=%s WHERE id=%s", 
                           (status, obs, session_data['usuario'], data['id']))
             else:
-                c.execute("UPDATE solicitacao SET status=?, obs_improdutivo=?, resolvido_por=NULL WHERE id=?", 
+                c.execute("UPDATE solicitacao SET status=%s, obs_improdutivo=%s, resolvido_por=NULL WHERE id=%s", 
                           (status, obs, data['id']))
             conn.commit()
 
         elif self.path == '/retroceder' and session_data['role'] == 'admin':
-            c.execute("UPDATE solicitacao SET status='Restabelecer', resolvido_por=NULL WHERE id=?", (data['id'],))
+            c.execute("UPDATE solicitacao SET status='Restabelecer', resolvido_por=NULL WHERE id=%s", (data['id'],))
             conn.commit()
 
         elif self.path == '/deletar':
-            c.execute("DELETE FROM solicitacao WHERE id=?", (data['id'],))
+            c.execute("DELETE FROM solicitacao WHERE id=%s", (data['id'],))
             conn.commit()
 
         conn.close()
