@@ -54,17 +54,17 @@ def init_db():
     ''')
     
     # Lista de usuários padrão definidos para o sistema
-    usuarios_padrao = [
-        ("admin", "123", "admin"),
-        ("kauangsm", "!KauanMnhaw02062003@", "admin"),
-        ("julianagsm", "Gsmcopytec@2026", "admin"),
-        ("heloisa", "contratos@2026", "comum"),
-        ("andressa", "contratos@2026", "comum"),
-        ("pedro", "contratos@2026", "comum")
-    ]
+#    usuarios_padrao = [
+#       ("admin", "123", "admin"),
+#        ("kauangsm", "!KauanMnhaw02062003@", "admin"),
+#        ("julianagsm", "Gsmcopytec@2026", "admin"),
+#        ("heloisa", "contratos@2026", "comum"),
+#        ("andressa", "contratos@2026", "comum"),
+#        ("pedro", "contratos@2026", "comum")
+#    ]
     
-    for u, s, r in usuarios_padrao:
-        c.execute("INSERT INTO usuarios(username, senha, role) VALUES (%s,%s,%s) ON CONFLICT(username) DO NOTHING;", (u, s, r))
+#    for u, s, r in usuarios_padrao:
+#        c.execute("INSERT INTO usuarios(username, senha, role) VALUES (%s,%s,%s) ON CONFLICT(username) DO NOTHING;", (u, s, r))
         
     conn.commit()
     conn.close()
